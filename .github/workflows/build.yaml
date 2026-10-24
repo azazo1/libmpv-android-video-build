@@ -1,6 +1,9 @@
 name: Build libmpv-android
 
 on:
+  push:
+    branches:
+      - mpv-vnext
   pull_request:
   workflow_dispatch:
     inputs:
@@ -65,15 +68,19 @@ jobs:
           name: artifact
           path: ./output/*.jar
 
-      - name: Set Tag Name
-        if: ${{ github.event.inputs.release == 'true' }}
-        run: echo "TAG_NAME=$(date +'%Y%m%d')" >> $GITHUB_ENV
+      - name: Write md5
+        if: ${{ github.event_name == 'push' || github.event.inputs.release == 'true' }}
+        working-directory: ./output
+        run: md5sum *.jar > md5.txt
 
       - uses: softprops/action-gh-release@v3
-        if: ${{ github.event.inputs.release == 'true' }}
+        if: ${{ github.event_name == 'push' || github.event.inputs.release == 'true' }}
         with:
-          draft: true
+          draft: false
           prerelease: false
-          tag_name: ${{ env.TAG_NAME }}
+          tag_name: vnext
+          name: vnext
+          overwrite_files: true
           files: |
             output/*.jar
+            output/md5.txt
