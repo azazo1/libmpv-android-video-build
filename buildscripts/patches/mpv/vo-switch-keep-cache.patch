@@ -1,19 +1,25 @@
 diff --git a/demux/demux.c b/demux/demux.c
-index d1accba..d368f60 100644
+index d1accba..79fbee6 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
-@@ -3979,6 +3979,24 @@ static void initiate_refresh_seek(struct demux_internal *in,
+@@ -3979,6 +3979,30 @@ static void initiate_refresh_seek(struct demux_internal *in,
      in->seek_pts = start_ts;
  }
  
-+// Rewind the reader position to the closest cached keyframe, so a rebuilt
-+// video chain starts decoding immediately without seeking or flushing the
-+// demux cache.
-+static bool rewind_video_to_keyframe(struct demux_stream *ds)
++// Rewind the reader position to the closest cached keyframe at or before
++// ref_pts, so a rebuilt video chain starts decoding immediately without
++// seeking or flushing the demux cache.
++//
++// The caller has already cleared reader_head (update_stream_selection_state ->
++// ds_clear_reader_state), so ref_pts is the only upper bound available. Without
++// it the reader position would land on the newest cached keyframe, i.e. the end
++// of the buffered range, and the video chain would start far in the future.
++static bool rewind_video_to_keyframe(struct demux_stream *ds, double ref_pts)
 +{
 +    struct demux_packet *kf = NULL;
-+    for (struct demux_packet *dp = ds->queue->head;
-+         dp && dp != ds->reader_head; dp = dp->next) {
++    for (struct demux_packet *dp = ds->queue->head; dp; dp = dp->next) {
++        if (dp->pts == MP_NOPTS_VALUE || dp->pts > ref_pts)
++            break;
 +        if (dp->keyframe)
 +            kf = dp;
 +    }
@@ -27,13 +33,13 @@ index d1accba..d368f60 100644
  // Called locked.
  static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
                            double ref_pts)
-@@ -4007,6 +4025,13 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+@@ -4007,6 +4031,13 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
      //   is sought to the end of cache after cache joining. Switching track immediately
      //   after this also causes the same problem.
      if (!in->after_seek || (ds->type != STREAM_VIDEO && !avoid_refresh)) {
 +        // For video, rewind to a cached keyframe instead of seeking: the seek
 +        // would clear the whole queue and drop the prebuffered data.
-+        if (ds->type == STREAM_VIDEO && rewind_video_to_keyframe(ds)) {
++        if (ds->type == STREAM_VIDEO && rewind_video_to_keyframe(ds, ref_pts)) {
 +            MP_VERBOSE(in, "rewind video track %d to cached keyframe\n",
 +                       stream->index);
 +            return;
