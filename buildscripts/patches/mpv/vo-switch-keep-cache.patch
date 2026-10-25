@@ -1,0 +1,60 @@
+diff --git a/demux/demux.c b/demux/demux.c
+index d1accba..d368f60 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -3979,6 +3979,24 @@ static void initiate_refresh_seek(struct demux_internal *in,
+     in->seek_pts = start_ts;
+ }
+ 
++// Rewind the reader position to the closest cached keyframe, so a rebuilt
++// video chain starts decoding immediately without seeking or flushing the
++// demux cache.
++static bool rewind_video_to_keyframe(struct demux_stream *ds)
++{
++    struct demux_packet *kf = NULL;
++    for (struct demux_packet *dp = ds->queue->head;
++         dp && dp != ds->reader_head; dp = dp->next) {
++        if (dp->keyframe)
++            kf = dp;
++    }
++    if (!kf)
++        return false;
++    ds->reader_head = kf;
++    ds->skip_to_keyframe = false;
++    return true;
++}
++
+ // Called locked.
+ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+                           double ref_pts)
+@@ -4007,6 +4025,13 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+     //   is sought to the end of cache after cache joining. Switching track immediately
+     //   after this also causes the same problem.
+     if (!in->after_seek || (ds->type != STREAM_VIDEO && !avoid_refresh)) {
++        // For video, rewind to a cached keyframe instead of seeking: the seek
++        // would clear the whole queue and drop the prebuffered data.
++        if (ds->type == STREAM_VIDEO && rewind_video_to_keyframe(ds)) {
++            MP_VERBOSE(in, "rewind video track %d to cached keyframe\n",
++                       stream->index);
++            return;
++        }
+         MP_VERBOSE(in, "refresh track %d (%s)\n", stream->index,
+                    stream_type_name(ds->type));
+         initiate_refresh_seek(in, ds, ref_pts);
+diff --git a/player/command.c b/player/command.c
+index 96bc06a..30b979a 100644
+--- a/player/command.c
++++ b/player/command.c
+@@ -7954,8 +7954,11 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
+         uninit_video_out(mpctx);
+         handle_force_window(mpctx, true);
+         reinit_video_chain(mpctx);
++        // 重建视频链后只刷新视频流, 让它从缓存里最近的关键帧开始解码.
++        // 不做整体 seek: 音频输出和 demux 缓存都不会被打断, 播放位置
++        // 由音频维持, 视频链重建后由 mpv 自身按 playback_pts 跳过旧帧.
+         if (track)
+-            queue_seek(mpctx, MPSEEK_RELATIVE, 0.0, MPSEEK_EXACT, 0);
++            reselect_demux_stream(mpctx, track, true);
+ 
+         mp_wakeup_core(mpctx);
+     }
