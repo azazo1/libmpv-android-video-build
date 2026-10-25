@@ -1,10 +1,14 @@
 # --------------------------------------------------
 
-if [ ! -f "deps" ]; then
-  sudo rm -r deps
-fi
-if [ ! -f "prefix" ]; then
-  sudo rm -r prefix
+# CI 复用缓存时保留依赖源码与编译产物, 避免每次全量重编.
+# patch.sh 会先 reset 再 apply, 保留 deps 是安全的.
+if [ -z "${LIBMPV_REUSE_BUILD:-}" ]; then
+  if [ ! -f "deps" ]; then
+    sudo rm -r deps
+  fi
+  if [ ! -f "prefix" ]; then
+    sudo rm -r prefix
+  fi
 fi
 
 ./download.sh || exit 1

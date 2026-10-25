@@ -1,13 +1,16 @@
 name: Build libmpv-android
 
 on:
+  push:
+    branches:
+      - mpv-vnext
   pull_request:
   workflow_dispatch:
     inputs:
-      release:
-        description: 'Create a draft release of the build'
+      publish:
+        description: 'Publish the jars to the vnext release'
         required: false
-        default: false
+        default: true
         type: boolean
       logLevel:
         description: 'Log level'
@@ -33,47 +36,57 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v5
+
       - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           cache: true
+
+      # 复用依赖源码与上一次的编译产物. 依赖版本或补丁变化时 key 会变,
+      # 自动退回一次全量构建.
+      - name: Cache native build
+        uses: actions/cache@v4
+        with:
+          path: |
+            buildscripts/deps
+            buildscripts/prefix
+          key: libmpv-${{ runner.os }}-${{ hashFiles('buildscripts/include/depinfo.sh', 'buildscripts/patches/**') }}
+          restore-keys: |
+            libmpv-${{ runner.os }}-
+
       - name: Symlink SDK
         working-directory: ./buildscripts
         run: |
           mkdir sdk
           ln -s ${ANDROID_HOME} ./sdk/android-sdk-linux
+
       - name: Bundle (default)
         working-directory: ./buildscripts
+        env:
+          LIBMPV_REUSE_BUILD: "1"
         run: |
           sudo chmod +x bundle_default.sh
           ./bundle_default.sh
-      # - name: Bundle (full)
-      #   working-directory: ./buildscripts
-      #   run: |
-      #     sudo chmod +x bundle_full.sh
-      #     ./bundle_full.sh
-      # - name: Bundle (encoders-gpl)
-      #   working-directory: ./buildscripts
-      #   run: |
-      #     sudo chmod +x bundle_encoders-gpl.sh
-      #     ./bundle_encoders-gpl.sh
+
       - uses: actions/upload-artifact@v7
         with:
           name: artifact
           path: ./output/*.jar
 
-      - name: Set Tag Name
-        if: ${{ github.event.inputs.release == 'true' }}
-        run: echo "TAG_NAME=$(date +'%Y%m%d')" >> $GITHUB_ENV
-
-      - uses: softprops/action-gh-release@v3
-        if: ${{ github.event.inputs.release == 'true' }}
-        with:
-          draft: true
-          prerelease: false
-          tag_name: ${{ env.TAG_NAME }}
-          files: |
-            output/*.jar
+      # 发布到固定 tag vnext, 同时上传 md5.txt. media_kit 构建时按这份清单校验,
+      # libmpv 更新后不需要再改 media_kit 里的 md5.
+      - name: Publish vnext
+        if: ${{ github.event_name == 'push' || github.event.inputs.publish == 'true' }}
+        working-directory: ./output
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          md5sum default-arm64-v8a.jar default-armeabi-v7a.jar default-x86_64.jar > md5.txt
+          cat md5.txt
+          gh release view vnext >/dev/null 2>&1 || \
+            gh release create vnext --title vnext --notes "Pinned libmpv Android artifacts for media-kit."
+          gh release upload vnext default-arm64-v8a.jar default-armeabi-v7a.jar default-x86_64.jar md5.txt --clobber
